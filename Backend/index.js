@@ -7,6 +7,7 @@ require("dotenv").config();
 const PORT = process.env.PORT || 4000;
 
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 require("./config/db").connect();
 
 app.use(detectAndBlock);
