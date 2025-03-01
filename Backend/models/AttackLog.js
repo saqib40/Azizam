@@ -9,6 +9,8 @@ const attackSchema = new mongoose.Schema({
   timestamp: { type: Date, default: Date.now },
   method: String, //HTTP method (GET, POST, etc.)
   path: String, // Which URL path was targeted (e.g., "/login")
+  fingerprint: String,
+  attemptCount: { type: Number, default: 1 }
 });
 
 module.exports = mongoose.model("Attack", attackSchema);
