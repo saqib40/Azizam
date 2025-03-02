@@ -52,7 +52,7 @@ export default function DLogin() {
         const clientData = await getClientSideData();
 
         // Send data to backend including navigator and screen info
-        const response = await fetch("http://localhost:3000/login", { // Updated port to match backend
+        const response = await fetch("http://172.20.10.14:4000/v1/userlogin", { // Updated port to match backend
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -74,8 +74,8 @@ export default function DLogin() {
           alert("Login failed - incorrect credentials");
         } else if (response.ok) { // Unexpected success (honeypot shouldn’t succeed)
           console.log("Unexpected success - token:", responseData.token);
-          localStorage.setItem("myToken", responseData.token);
-          navigate("/all-machines");
+          alert("Successful login");
+          navigate("/login");
           window.location.reload();
         }
       } catch (error) {

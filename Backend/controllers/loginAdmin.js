@@ -1,7 +1,7 @@
 const adminModel = require("../models/admin");
 const jwt = require("jsonwebtoken");
 require("dotenv").config();
-const bcrypt = require("bcrypt");
+//const bcrypt = require("bcrypt");
 
 async function loginAdmin(req,res) {
     try {
@@ -17,7 +17,7 @@ async function loginAdmin(req,res) {
             });
         }
         // verify password and generate a JWT token
-        if (await bcrypt.compare(password, admin.password)) {
+        if (password === admin.password) {
             const payload = {
               email: admin.email,
               id: admin._id,

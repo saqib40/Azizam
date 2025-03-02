@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Container,
   Typography,
@@ -45,6 +46,7 @@ const CTASection = styled(Box)(({ theme }) => ({
 
 function App() {
   const [hover, setHover] = useState(false);
+  const navigate = useNavigate();
 
   return (
     <ThemeProvider theme={theme}>
@@ -64,6 +66,7 @@ function App() {
             sx={{ mt: 4 }}
             onMouseEnter={() => setHover(true)}
             onMouseLeave={() => setHover(false)}
+            onClick={() => navigate("/login")}
             style={{ transform: hover ? 'scale(1.05)' : 'scale(1)', transition: 'transform 0.2s' }}
           >
             Go to Dashboard
@@ -130,6 +133,7 @@ function App() {
             sx={{ mt: 2 }}
             onMouseEnter={() => setHover(true)}
             onMouseLeave={() => setHover(false)}
+            onClick={() => window.open('https://github.com/saqib40/Azizam', '_blank')}
             style={{ transform: hover ? 'scale(1.05)' : 'scale(1)', transition: 'transform 0.2s' }}
           >
             Get Started

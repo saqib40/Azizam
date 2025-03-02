@@ -1,12 +1,13 @@
 const crypto = require('crypto');
-const Attack = require('../models/AttackLog'); // Assuming your Attack model is defined elsewhere
+const Attack = require('../models/AttackLog');
+const BlockedIP = require('../models/BlockedIPs');
 
 // Preprocess input for consistency
 const preprocessInput = (payload) => {
   let decoded = payload;
   try {
-    decoded = decodeURIComponent(payload); // URL decoding
-    decoded = decoded.replace(/&#x?[\da-fA-F]+;/gi, (match) => String.fromCharCode(parseInt(match.replace(/&#x?/i, '').replace(';', ''), 16))); // HTML entity decoding
+    decoded = decodeURIComponent(payload);
+    decoded = decoded.replace(/&#x?[\da-fA-F]+;/gi, (match) => String.fromCharCode(parseInt(match.replace(/&#x?/i, '').replace(';', ''), 16)));
   } catch (e) {}
   return decoded.toLowerCase().replace(/\s+/g, '');
 };
@@ -35,54 +36,67 @@ const getAdvancedFingerprint = (req, navigatorData = null) => {
   if (navigatorData) {
     basicFingerprint += `-${navigatorData.userAgent || ''}-${navigatorData.language || ''}-${navigatorData.platform || ''}-${navigatorData.hardwareConcurrency || ''}-${navigatorData.deviceMemory || ''}-${navigatorData.maxTouchPoints || ''}-${req.body.screen?.width || ''}-${req.body.screen?.height || ''}-${req.body.screen?.colorDepth || ''}-${new Date().getTimezoneOffset()}`;
   }
-  return crypto.createHash('md5').update(basicFingerprint).digest('hex'); // Hash for consistency
+  return crypto.createHash('md5').update(basicFingerprint).digest('hex');
 };
 
-// Detect repeated attempts across IPs using fingerprint
-const detectRepeatedAttempts = async (fingerprint) => {
+// Brute Force detection with fingerprint
+const detectBruteForce = async (req, payload, fingerprint) => {
+  const MAX_ATTEMPTS = 5;
+  const TIME_FRAME = 10 * 60 * 1000; // 10 minutes
   const recentAttacks = await Attack.countDocuments({
     fingerprint,
-    timestamp: { $gte: new Date(Date.now() - 10 * 60 * 1000) }, // Last 10 minutes
+    timestamp: { $gte: new Date(Date.now() - TIME_FRAME) },
   });
-  return recentAttacks >= 5; // Block if 5+ attempts
-};
-
-// Updated Brute Force detection
-const detectBruteForce = async (req, payload) => {
-  const fingerprint = getAdvancedFingerprint(req, req.body.navigator); // Client-side data if provided
-  const isRepeated = await detectRepeatedAttempts(fingerprint);
   const isShortPayload = payload.length < 50 && (/\d/.test(payload) || /admin|test|pass/.test(payload.toLowerCase()));
-  return isRepeated || isShortPayload; // Block if fingerprint repeats OR payload looks like brute force
+  return recentAttacks >= MAX_ATTEMPTS || isShortPayload;
 };
 
-const isMalicious = async (req, payload) => {
-  return detectXSS(payload) || detectSQLi(payload) || (await detectBruteForce(req, payload));
+// Determine attack type
+const getAttackType = async (req, payload, fingerprint) => {
+  if (detectXSS(payload)) return "XSS";
+  if (detectSQLi(payload)) return "SQLi";
+  if (await detectBruteForce(req, payload, fingerprint)) return "Brute";
+  return "Brute"; // Default
 };
 
-// Login Decoy Handler
+// Block IP and update models
+const blockIP = async (ip, reason) => {
+  const alreadyBlocked = await BlockedIP.findOne({ ip });
+  if (!alreadyBlocked) {
+    await BlockedIP.create({
+      ip,
+      reason,
+      blockedAt: new Date(),
+    });
+    console.log(`[SECURITY] Blocked IP: ${ip} for ${reason}`);
+  }
+};
+
 async function loginDecoy(req, res) {
   const { username, password } = req.body;
-  const payload = JSON.stringify({ username, password });
-  const fingerprint = getAdvancedFingerprint(req, req.body.navigator); // Expect client-side data in req.body
+  const rawPayload = JSON.stringify({ username, password });
+  const ip = req.headers['x-forwarded-for'] || req.ip || req.connection.remoteAddress || 'unknown';
+  const fingerprint = getAdvancedFingerprint(req, req.body.navigator);
+  const attackType = await getAttackType(req, rawPayload, fingerprint);
 
-  // Check recent attacks with this fingerprint
+  // Log the attack
   const recentAttacks = await Attack.findOne({
     fingerprint,
-    timestamp: { $gte: new Date(Date.now() - 10 * 60 * 1000) }, // Last 10 minutes
+    timestamp: { $gte: new Date(Date.now() - 10 * 60 * 1000) },
   });
 
   let attack;
   if (recentAttacks) {
     attack = recentAttacks;
     attack.attemptCount += 1;
-    attack.ip = req.ip; // Update IP if changed
-    attack.payload = payload; // Update latest payload
-    attack.timestamp = new Date(); // Update timestamp
+    attack.ip = ip;
+    attack.payload = attackType;
+    attack.timestamp = new Date();
     await attack.save();
   } else {
     attack = new Attack({
-      ip: req.ip,
-      payload,
+      ip,
+      payload: attackType,
       method: req.method,
       path: req.path,
       fingerprint,
@@ -91,15 +105,36 @@ async function loginDecoy(req, res) {
     await attack.save();
   }
 
-  // Check if malicious (XSS, SQLi, or Brute Force)
-  const malicious = await isMalicious(req, payload);
-  if (malicious || attack.attemptCount >= 5) {
-    console.log(`Blocked: ${fingerprint} - ${malicious ? 'Malicious payload' : 'Excessive attempts'} from IP: ${req.ip}`);
-    return res.status(403).send('Access denied - suspicious activity detected');
+  console.log(`[DEBUG] Attack logged - IP: ${ip}, Fingerprint: ${fingerprint}, Type: ${attackType}, Attempts: ${attack.attemptCount}`);
+
+  // Blocking Logic
+  if (attackType === "SQLi" || attackType === "XSS") {
+    // Instant block for SQLi or XSS
+    await blockIP(ip, attackType);
+    return res.status(403).json({ message: "Access denied. Your IP has been blocked due to malicious activity." });
+  } else if (attackType === "Brute") {
+    // Brute Force: Block all IPs with this fingerprint if threshold reached
+    const recentAttacksCount = await Attack.countDocuments({
+      fingerprint,
+      timestamp: { $gte: new Date(Date.now() - 10 * 60 * 1000) },
+    });
+
+    if (recentAttacksCount >= 5) {
+      // Find all IPs associated with this fingerprint
+      const relatedAttacks = await Attack.find({
+        fingerprint,
+        timestamp: { $gte: new Date(Date.now() - 10 * 60 * 1000) },
+      }).distinct('ip');
+
+      for (const relatedIP of relatedAttacks) {
+        await blockIP(relatedIP, "Brute");
+      }
+      return res.status(403).json({ message: "Access denied. Your IP has been blocked due to excessive login attempts." });
+    }
   }
 
-  // Simulate failed login for honeypot
-  res.status(401).send('Login failed');
+  // Simulate failed login if not blocked
+  res.status(401).json({ message: "Login failed" });
 }
 
 module.exports = loginDecoy;
